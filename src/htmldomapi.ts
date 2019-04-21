@@ -33,6 +33,7 @@ function createComment(text: string): Comment {
 }
 
 function insertBefore(parentNode: Node, newNode: Node, referenceNode: Node | null): void {
+  // https://developer.mozilla.org/zh-CN/docs/Web/API/Node/insertBefore
   parentNode.insertBefore(newNode, referenceNode);
 }
 
