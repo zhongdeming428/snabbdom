@@ -264,7 +264,7 @@ export function init(modules: Array<Partial<Module>>, domApi?: DOMAPI) {
           } else {
             // 选择器匹配上了，可以直接更新。
             patchVnode(elmToMove, newStartVnode, insertedVnodeQueue);
-            oldCh[idxInOld] = undefined as any; // 已更新的旧 vnode 复制为 undefined。
+            oldCh[idxInOld] = undefined as any; // 已更新的旧 vnode 赋值为 undefined。
             api.insertBefore(parentElm, (elmToMove.elm as Node), oldStartVnode.elm as Node);
           }
           newStartVnode = newCh[++newStartIdx];
