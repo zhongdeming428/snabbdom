@@ -344,7 +344,7 @@ export function init(modules: Array<Partial<Module>>, domApi?: DOMAPI) {
     }
 
     if (sameVnode(oldVnode, vnode)) {
-      // 如果 oldVnode 和 vnode 是同一个 vnode（相同的 key），那么更新 oldVnode。
+      // 如果 oldVnode 和 vnode 是同一个 vnode（相同的 key 和相同的选择器），那么更新 oldVnode。
       patchVnode(oldVnode, vnode, insertedVnodeQueue);
     } else {
       // 如果 vnode 不同于 oldVnode，那么直接替换掉 oldVnode 对应的 DOM。
