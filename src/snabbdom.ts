@@ -338,7 +338,7 @@ export function init(modules: Array<Partial<Module>>, domApi?: DOMAPI) {
     for (i = 0; i < cbs.pre.length; ++i) cbs.pre[i]();
     
     if (!isVnode(oldVnode)) {
-      // 如果不是 VNode，那 oldVnodetongjijiedian
+      // 如果不是 VNode，
       // 此时以旧的 DOM 为模板构造一个空的 VNode。
       oldVnode = emptyNodeAt(oldVnode);
     }

@@ -399,7 +399,7 @@ export function init(modules: Array<Partial<Module>>, domApi?: DOMAPI) {
     }
   }
 	
-  // 这中间定义了一大堆工具函数，稍后分析……此处暂时省略。
+  // 这中间定义了一大堆工具函数，稍后做选择性分析……此处省略。
  
   // init 函数返回的 patch 函数，用于挂载或者更新 DOM。
   return function patch(oldVnode: VNode | Element, vnode: VNode): VNode {
@@ -474,9 +474,207 @@ const module2 = {
 
 这种结构类似于发布——订阅模式的事件中心，以事件名作为键，键值是事件处理函数组成的数组，在事件发生时，数组中的函数会依次执行，与此处一致。
 
-在处理好 hooks‘之后，init 内部定义了一系列工具函数，此处暂不讲解，先往后看。
+在处理好 hooks 之后，init 内部定义了一系列工具函数，此处暂不讲解，先往后看。
 
-init 处理到最后返回的使我们预期的 patch 函数，该函数使我们使用 snabbdom 的重要入口。
+init 处理到最后返回的使我们预期的 patch 函数，该函数是我们使用 snabbdom 的重要入口，其具体定义如下：
 
+```typescript
+// init 函数返回的 patch 函数，用于挂载或者更新 DOM。
+return function patch(oldVnode: VNode | Element, vnode: VNode): VNode {
+  let i: number, elm: Node, parent: Node;
+  const insertedVnodeQueue: VNodeQueue = [];
+  // 先执行完钩子函数对象中的所有 pre 回调。
+  for (i = 0; i < cbs.pre.length; ++i) cbs.pre[i]();
+  
+  if (!isVnode(oldVnode)) {
+    // 如果不是 VNode，那此时以旧的 DOM 为模板构造一个空的 VNode。
+    oldVnode = emptyNodeAt(oldVnode);
+  }
 
+  if (sameVnode(oldVnode, vnode)) {
+    // 如果 oldVnode 和 vnode 是同一个 vnode（相同的 key 和相同的选择器），那么更新 oldVnode。
+    patchVnode(oldVnode, vnode, insertedVnodeQueue);
+  } else {
+    // 如果 vnode 不同于 oldVnode，那么直接替换掉 oldVnode 对应的 DOM。
+    elm = oldVnode.elm as Node;
+    parent = api.parentNode(elm); // oldVnode 对应 DOM 的父节点。
 
+    createElm(vnode, insertedVnodeQueue);
+
+    if (parent !== null) {
+      // 如果 oldVnode 的对应 DOM 有父节点，并且有同级节点，那就在其同级节点之后插入 vnode 的对应 DOM。
+      api.insertBefore(parent, vnode.elm as Node, api.nextSibling(elm));
+      // 在把 vnode 的对应 DOM 插入到 oldVnode 的父节点内后，移除 oldVnode 的对应 DOM，完成替换。
+      removeVnodes(parent, [oldVnode], 0, 0);
+    }
+  }
+
+  for (i = 0; i < insertedVnodeQueue.length; ++i) {
+    // 执行 insert 钩子。因为 module 不包括 insert 钩子，所以不必执行 cbs...
+    (((insertedVnodeQueue[i].data as VNodeData).hook as Hooks).insert as any)(insertedVnodeQueue[i]);
+  }
+  // 执行 post 钩子，代表 patch 操作完成。
+  for (i = 0; i < cbs.post.length; ++i) cbs.post[i]();
+  // 最终返回 vnode。
+  return vnode;
+};
+```
+
+可以看到在 patch 执行的一开始，就遍历了 cbs 中的所有 pre 钩子，也就是所有 module 中定义的 pre 函数。执行完了 pre 钩子，代表 patch 过程已经开始了。
+
+接下来首先判断 oldVnode 是不是 vnode 类型，如果不是，就代表 oldVnode 是一个 HTML 元素，那我们就要把他转化为一个 vnode，方便后面的更新，更新完毕之后再进行挂载。转化为 vnode 的方式很简单，直接将其 DOM 结构挂载到 vnode 的 elm 属性，然后构造好 sel 即可。
+
+随后，通过 `sameVnode` 判断是否是同一个 “vnode”。如果不是，那么就可以直接把两个 vnode 代表的 DOM 元素进行直接替换；如果是“同一个” vnode，那么就需要进行下一步对比，看看到底有哪些地方需要更新，可以看做是一个 DOM Diff 过程。所以这里出现了 snabbdom 的一个小诀窍，通过 sel 和 key 区分 vnode，不相同的 vnode 可以直接替换，不进行下一步的替换。这样做在很大程度上避免了一些没有必要的比较，节约了性能。
+
+完成上面的步骤之后，就已经把 vnode 挂载到 DOM 上了，完成这个步骤之后，需要执行 vnode 的 insert 钩子，告诉所有的模块：一个 DOM 已经挂载了！
+
+最后，执行所有的 post 钩子并返回 vnode，通知所有模块整个 patch 过程已经结束啦！
+
+整个 patch 的简略过程大致如下：
+
+<!-- more -->
+
+不难发现重点在于当 oldVnode 和 vnode 是同一个 vnode 时如何进行更新。这就自然而然的涉及到了 `patchVnode` 函数，该函数结构如下：
+
+```typescript
+function patchVnode(oldVnode: VNode, vnode: VNode, insertedVnodeQueue: VNodeQueue) {
+  let i: any, hook: any;
+  if (isDef(i = vnode.data) && isDef(hook = i.hook) && isDef(i = hook.prepatch)) {
+    // 如果 vnode.data.hook.prepatch 不为空，则执行 prepatch 钩子。
+    i(oldVnode, vnode);
+  }
+  const elm = vnode.elm = (oldVnode.elm as Node);
+  let oldCh = oldVnode.children;
+  let ch = vnode.children;
+  // 如果两个 vnode 是真正意义上的相等，那完全就不用更新了。
+  if (oldVnode === vnode) return;
+  if (vnode.data !== undefined) {
+    // 如果 vnode 的 data 不为空，那么执行 update。
+    for (i = 0; i < cbs.update.length; ++i) cbs.update[i](oldVnode, vnode);
+    i = vnode.data.hook;
+    // 执行 vnode.data.hook.update 钩子。
+    if (isDef(i) && isDef(i = i.update)) i(oldVnode, vnode);
+  }
+  if (isUndef(vnode.text)) {
+    // 如果 vnode.text 未定义。
+    if (isDef(oldCh) && isDef(ch)) {
+      // 如果都有 children，那就更新 children。
+      if (oldCh !== ch) updateChildren(elm, oldCh as Array<VNode>, ch as Array<VNode>, insertedVnodeQueue);
+    } else if (isDef(ch)) {
+      // 如果 oldVnode 是文本节点，而更新后 vnode 包含 children；
+      // 那就先移除 oldVnode 的文本节点，然后添加 vnode。
+      if (isDef(oldVnode.text)) api.setTextContent(elm, '');
+      addVnodes(elm, null, ch as Array<VNode>, 0, (ch as Array<VNode>).length - 1, insertedVnodeQueue);
+    } else if (isDef(oldCh)) {
+      // 如果 oldVnode 有 children，而新的 vnode 只有文本节点；
+      // 那就移除 vnode 即可。
+      removeVnodes(elm, oldCh as Array<VNode>, 0, (oldCh as Array<VNode>).length - 1);
+    } else if (isDef(oldVnode.text)) {
+      // 如果更新前后，vnode 都没有 children，那么就添加空的文本节点，因为大前提是 vnode.text === undefined。
+      api.setTextContent(elm, '');
+    }
+  } else if (oldVnode.text !== vnode.text) {
+    // 定义了 vnode.text，并且 vnode 的 text 属性不同于 oldVnode 的 text 属性。
+    if (isDef(oldCh)) {
+      // 如果 oldVnode 具有 children 属性（具有 vnode），那么移除所有 vnode。
+      removeVnodes(elm, oldCh as Array<VNode>, 0, (oldCh as Array<VNode>).length - 1);
+    }
+    // 设置文本内容。
+    api.setTextContent(elm, vnode.text as string);
+  }
+  if (isDef(hook) && isDef(i = hook.postpatch)) {
+    // 完成了更新，调用 postpatch 钩子函数。
+    i(oldVnode, vnode);
+  }
+}
+```
+
+该函数是用于更新 vnode 的主要函数，所以 vnode 的主要生命周期都在这个函数内完成。首先执行的钩子就是 prepatch，表示元素即将被 patch。然后会判断 vnode 是否包含 data 属性，如果包含则说明需要先更新 data，这时候会调用所有的 update 钩子（包括模块内的和 vnode 自带的 update 钩子），在 update 钩子内完成 data 的合并更新。在 children 更新之后，还会调用 postpatch 钩子，表示 patch 过程已经执行完毕。
+
+接下来从 text 入手，这一大块的注释都在代码里面写得很清楚了，这里不再赘述。重点在于 oldVnode 和 vnode 都有 children 属性的时候，如何更新 children？接下来看 `updateChildren`：
+
+```typescript
+function updateChildren(parentElm: Node,
+                          oldCh: Array<VNode>,
+                          newCh: Array<VNode>,
+                          insertedVnodeQueue: VNodeQueue) {
+  let oldStartIdx = 0, newStartIdx = 0;
+  let oldEndIdx = oldCh.length - 1;
+  let oldStartVnode = oldCh[0];
+  let oldEndVnode = oldCh[oldEndIdx];
+  let newEndIdx = newCh.length - 1;
+  let newStartVnode = newCh[0];
+  let newEndVnode = newCh[newEndIdx];
+  let oldKeyToIdx: any;
+  let idxInOld: number;
+  let elmToMove: VNode;
+  let before: any;
+
+  // 从两端开始开始遍历 children。
+  while (oldStartIdx <= oldEndIdx && newStartIdx <= newEndIdx) {
+    if (oldStartVnode == null) {
+      oldStartVnode = oldCh[++oldStartIdx]; // Vnode might have been moved left
+    } else if (oldEndVnode == null) {
+      oldEndVnode = oldCh[--oldEndIdx];
+    } else if (newStartVnode == null) {
+      newStartVnode = newCh[++newStartIdx];
+    } else if (newEndVnode == null) {
+      newEndVnode = newCh[--newEndIdx];
+    } else if (sameVnode(oldStartVnode, newStartVnode)) { // 如果是同一个 vnode。
+      patchVnode(oldStartVnode, newStartVnode, insertedVnodeQueue); // 更新旧的 vnode。
+      oldStartVnode = oldCh[++oldStartIdx];
+      newStartVnode = newCh[++newStartIdx];
+    } else if (sameVnode(oldEndVnode, newEndVnode)) { // 同上，但是是从尾部开始的。
+      patchVnode(oldEndVnode, newEndVnode, insertedVnodeQueue);
+      oldEndVnode = oldCh[--oldEndIdx];
+      newEndVnode = newCh[--newEndIdx];
+    } else if (sameVnode(oldStartVnode, newEndVnode)) { // Vnode moved right
+      patchVnode(oldStartVnode, newEndVnode, insertedVnodeQueue);
+      api.insertBefore(parentElm, oldStartVnode.elm as Node, api.nextSibling(oldEndVnode.elm as Node));
+      oldStartVnode = oldCh[++oldStartIdx];
+      newEndVnode = newCh[--newEndIdx];
+    } else if (sameVnode(oldEndVnode, newStartVnode)) { // Vnode moved left
+      patchVnode(oldEndVnode, newStartVnode, insertedVnodeQueue);
+      api.insertBefore(parentElm, oldEndVnode.elm as Node, oldStartVnode.elm as Node);
+      oldEndVnode = oldCh[--oldEndIdx];
+      newStartVnode = newCh[++newStartIdx];
+    } else {
+      if (oldKeyToIdx === undefined) {
+        // 创造一个 hash 结构，用键映射索引。
+        oldKeyToIdx = createKeyToOldIdx(oldCh, oldStartIdx, oldEndIdx);
+      }
+      idxInOld = oldKeyToIdx[newStartVnode.key as string]; // 通过 key 来获取对应索引。
+      if (isUndef(idxInOld)) { // New element
+        // 如果找不到索引，那就是新元素。
+        api.insertBefore(parentElm, createElm(newStartVnode, insertedVnodeQueue), oldStartVnode.elm as Node);
+        newStartVnode = newCh[++newStartIdx];
+      } else {
+        // 找到对应的 child vnode。
+        elmToMove = oldCh[idxInOld];
+        if (elmToMove.sel !== newStartVnode.sel) {
+          // 如果新旧 vnode 的选择器不能对应，那就直接插入到旧 vnode 之前。
+          api.insertBefore(parentElm, createElm(newStartVnode, insertedVnodeQueue), oldStartVnode.elm as Node);
+        } else {
+          // 选择器匹配上了，可以直接更新。
+          patchVnode(elmToMove, newStartVnode, insertedVnodeQueue);
+          oldCh[idxInOld] = undefined as any; // 已更新的旧 vnode 赋值为 undefined。
+          api.insertBefore(parentElm, (elmToMove.elm as Node), oldStartVnode.elm as Node);
+        }
+        newStartVnode = newCh[++newStartIdx];
+      }
+    }
+  }
+  if (oldStartIdx <= oldEndIdx || newStartIdx <= newEndIdx) {
+    if (oldStartIdx > oldEndIdx) {
+      before = newCh[newEndIdx+1] == null ? null : newCh[newEndIdx+1].elm;
+      addVnodes(parentElm, before, newCh, newStartIdx, newEndIdx, insertedVnodeQueue);
+    } else {
+      removeVnodes(parentElm, oldCh, oldStartIdx, oldEndIdx);
+    }
+  }
+}
+```
+
+`updateVnode` 函数在一开始就从 children 数组的首尾两端开始遍历。可以看到在遍历开始的时候会有一堆的 null 判断，为什么呢？先往后面看~
+
+判断完 null 之后，会比较新旧 children 内的同级对应节点是否“相同”，如果相同，那就
