@@ -1,4 +1,4 @@
-## 解密虚拟 DOM——snabbdom 源码解读（一）
+## 解密虚拟 DOM——snabbdom 核心源码解读
 
 对很多人而言，虚拟 DOM 都是一个很高大上而且远不可及的专有名词，以前我也这么认为，后来在学习 Vue 源码的时候发现 Vue 的虚拟 DOM 方案衍生于本文要讲的 snabbdom 工具，经过阅读源码之后才发现，虚拟 DOM 原来就是这么回事，并没有想象中那么难以理解嘛～
 
@@ -138,7 +138,7 @@ h(
 
 #### Thunk
 
-根据官方文档的说明，Thunk 是一种优化策略，可以防止创建重复的 vnode，然后对实际未发生变化的 vnode 做替换或者 patch，造成不必要的性能损耗。在后面的源码分析中，再做详细说明。
+根据官方文档的说明，Thunk 是一种优化策略，可以防止创建重复的 vnode，然后对实际未发生变化的 vnode 做替换或者 patch，造成不必要的性能损耗。在后面的源码分析中，再做详细说明吧。
 
 ### 二、源码目录结构
 
@@ -530,10 +530,6 @@ return function patch(oldVnode: VNode | Element, vnode: VNode): VNode {
 
 最后，执行所有的 post 钩子并返回 vnode，通知所有模块整个 patch 过程已经结束啦！
 
-整个 patch 的简略过程大致如下：
-
-<!-- more -->
-
 不难发现重点在于当 oldVnode 和 vnode 是同一个 vnode 时如何进行更新。这就自然而然的涉及到了 `patchVnode` 函数，该函数结构如下：
 
 ```typescript
@@ -665,16 +661,51 @@ function updateChildren(parentElm: Node,
     }
   }
   if (oldStartIdx <= oldEndIdx || newStartIdx <= newEndIdx) {
+    // 没匹配上的多余的就直接插入到 DOM 咯。
     if (oldStartIdx > oldEndIdx) {
+      // newCh 里面有新的 vnode，直接插入到 DOM。
       before = newCh[newEndIdx+1] == null ? null : newCh[newEndIdx+1].elm;
       addVnodes(parentElm, before, newCh, newStartIdx, newEndIdx, insertedVnodeQueue);
     } else {
+      // newCh 里面的 vnode 比 oldCh 里面的少，说明有元素被删除了。
       removeVnodes(parentElm, oldCh, oldStartIdx, oldEndIdx);
     }
   }
 }
 ```
 
-`updateVnode` 函数在一开始就从 children 数组的首尾两端开始遍历。可以看到在遍历开始的时候会有一堆的 null 判断，为什么呢？先往后面看~
+`updateVnode` 函数在一开始就从 children 数组的首尾两端开始遍历。可以看到在遍历开始的时候会有一堆的 null 判断，为什么呢？因为后面会把已经更新的 vnode children 赋值为 undefined。
 
-判断完 null 之后，会比较新旧 children 内的同级对应节点是否“相同”，如果相同，那就
+判断完 null 之后，会比较新旧 children 内的节点是否“相同”（排列组合共有四种比较方式），如果相同，那就继续调用 patchNode 更新节点，更新完之后就可以插入 DOM 了；如果四中情况都匹配不到，那么就通过之前建立的 key 与索引之间的映射来寻找新旧 children 数组中对应 child vnode 的索引，找到之后再进行具体操作。关于具体的操作，代码中已经注释了～
+
+对于遍历之后多余的 vnode，再分情况进行比较；如果 oldCh 多于 newCh，那说明该操作删除了部分 DOM。如果 oldCh 少于 newCh，那说明有新增的 DOM。
+
+关于 `updateChildren` 函数的讲述，这篇文章的讲述更为详细：[vue的Virtual Dom实现- snabbdom解密](https://www.cnblogs.com/xuntu/p/6800547.html) ，大家可以去读一下～
+
+讲完最重要的这个函数，整个核心部分基本上是弄完了，不难发现 snabbdom 的秘诀就在于使用：
+
+* 使用虚拟 DOM 模拟真实 DOM，JavaScript 内存操作性能大大优于 DOM 操作，所以性能比较好。
+* Diff 算法比较好，只比较同级 vnode，不会循环遍历去比较，而且采用 key 和 sel 标记 vnode，大大优化比较速度。这一做法类似于 Immutable，使用 hash 比较代替对象的循环递归比较，大大降低时间复杂度。
+
+最后还有一个小问题，这个贯穿许多函数的 `insertedVnodeQueue` 数组是干嘛的？它只在 `createElm` 函数中进行 push 操作，然后在最后的 insert 钩子中进行遍历。仔细一想就可以发现，这个插入 vnode 队列存起来的是一个 children 的左右子 children，看下面一段代码：
+
+```js
+h(
+	'div',
+    {},
+    [
+        h(/*...*/),
+        h(/*...*/),
+        h(/*...*/)
+    ]
+)
+```
+
+可以看到 div 下面包含了三个 children，那么当这个 div 元素被插入到 DOM 时，它的三个子 children 也会触发 insert 事件，所以在插入 vnode 时，会遍历其所有 children，然后每个 vnode 都会放入到队列中，在插入之后再统一执行 insert 钩子。
+
+以上，就写这么多吧～多的也没时间写了。
+
+### 八、参考文章
+
+* [vue的Virtual Dom实现- snabbdom解密](https://www.cnblogs.com/xuntu/p/6800547.html)
+

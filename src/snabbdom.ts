@@ -272,10 +272,13 @@ export function init(modules: Array<Partial<Module>>, domApi?: DOMAPI) {
       }
     }
     if (oldStartIdx <= oldEndIdx || newStartIdx <= newEndIdx) {
+      // 没匹配上的多余的就直接插入到 DOM 咯。
       if (oldStartIdx > oldEndIdx) {
+        // newCh 里面有新的 vnode，直接插入到 DOM。
         before = newCh[newEndIdx+1] == null ? null : newCh[newEndIdx+1].elm;
         addVnodes(parentElm, before, newCh, newStartIdx, newEndIdx, insertedVnodeQueue);
       } else {
+        // newCh 里面的 vnode 比 oldCh 里面的少，说明有元素被删除了。
         removeVnodes(parentElm, oldCh, oldStartIdx, oldEndIdx);
       }
     }
